@@ -50,7 +50,7 @@ STRIPPED_CONFIG_HEADER = (
 )
 
 
-def _load_versions():
+def _load_versions() -> dict[str, str]:
     """Load version strings from distribution/versions.env."""
     versions = {}
     versions_path = Path(__file__).parent / "versions.env"
@@ -63,11 +63,29 @@ def _load_versions():
     return versions
 
 
-_versions = _load_versions()
-_default_version = f"v{_versions['OGX_VERSION']}+{_versions['OGX_RHAI_VERSION']}"
-_raw_version = os.getenv("OGX_VERSION", _default_version)
-OGX_VERSION = _validate_version(_raw_version)
-OGX_CLIENT_VERSION = _versions.get("OGX_CLIENT_VERSION")
+def _init_versions() -> tuple[str, str]:
+    """Resolve OGX_VERSION and OGX_CLIENT_VERSION from versions.env and environment."""
+    versions = _load_versions()
+    for val in versions.values():
+        _validate_version(val)
+
+    ogx_version: str
+    if override := os.getenv("OGX_VERSION"):
+        ogx_version = _validate_version(override)
+    else:
+        ogx_version = f"v{versions['OGX_VERSION']}+{versions['OGX_RHAI_VERSION']}"
+
+    ogx_client_version: str
+    if client := versions.get("OGX_CLIENT_VERSION"):
+        ogx_client_version = client
+    else:
+        base_version = ogx_version.split("+")[0]
+        ogx_client_version = ".".join(base_version.split(".")[:3])
+
+    return ogx_version, ogx_client_version
+
+
+OGX_VERSION, OGX_CLIENT_VERSION = _init_versions()
 BASE_REQUIREMENTS = [
     f"ogx=={OGX_VERSION}",
 ]
@@ -93,25 +111,19 @@ uv pip install --no-cache --no-deps git+https://github.com/opendatahub-io/ogx.gi
 
 
 def get_ogx_install(ogx_version):
-    # Use explicit client version if set, otherwise derive from ogx_version
-    # by removing +rhai suffix and restricting to x.y.z format (3 parts)
-    if OGX_CLIENT_VERSION:
-        ogx_client_version = OGX_CLIENT_VERSION
+    if not is_install_from_source(ogx_version):
+        return
+
+    print(f"Installing ogx from source: {ogx_version}")
+
+    if is_version_tag(ogx_version):
+        template = source_install_command_pypi_client
     else:
-        # Remove +rhai suffix and restrict to x.y.z (e.g., v0.6.0.1+rhai0 -> v0.6.0)
-        base_version = ogx_version.split("+")[0]
-        ogx_client_version = ".".join(base_version.split(".")[:3])
-    if is_install_from_source(ogx_version):
-        print(f"Installing ogx from source: {ogx_version}")
+        template = source_install_command_git_client
 
-        if is_version_tag(ogx_version):
-            template = source_install_command_pypi_client
-        else:
-            template = source_install_command_git_client
-
-        result = template.replace("{ogx_version}", ogx_version)
-        result = result.replace("{ogx_client_version}", ogx_client_version)
-        return result.rstrip()
+    result = template.replace("{ogx_version}", ogx_version)
+    result = result.replace("{ogx_client_version}", OGX_CLIENT_VERSION)
+    return result.rstrip()
 
 
 def is_version_tag(version_str):
