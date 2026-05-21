@@ -60,12 +60,14 @@ jobs:
     needs: check
     if: needs.check.outputs.enabled == 'true'
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        model: ${{ fromJson(needs.check.outputs.models_json) }}
     permissions:
       id-token: write
       contents: read
       checks: write
-    env:
-      MODELS_JSON: ${{ needs.check.outputs.models_json }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -115,6 +117,12 @@ jobs:
           source .venv/bin/activate
           uv pip install -e . ogx-client ollama pytest langchain-openai langgraph
 
+      - name: Derive short model name
+        id: model
+        run: |
+          full='${{ matrix.model }}'
+          echo "short=${full##*/}" >> "$GITHUB_OUTPUT"
+
       - name: Run responses tests
         shell: bash
         run: |
@@ -123,35 +131,23 @@ jobs:
           mkdir -p /tmp/test-results
 
           SKIP_TESTS="test_response_connector_resolution_mcp_tool"
+          MODEL='${{ matrix.model }}'
+          SHORT='${{ steps.model.outputs.short }}'
 
-          readarray -t MODELS < <(echo "$MODELS_JSON" | python3 -c 'import json,sys; [print(m) for m in json.load(sys.stdin)]')
-
-          overall_rc=0
-          for model in "${MODELS[@]}"; do
-            short="${model##*/}"
-            echo "::group::Testing model $model"
-            set +e
-            python -m pytest -s -v tests/integration/responses/ \
-              -k "not ($SKIP_TESTS)" \
-              --stack-config=server:"$GITHUB_WORKSPACE/distribution/config.yaml" \
-              --text-model="$model" \
-              --embedding-model="$EMBEDDING_MODEL" \
-              --inference-mode=live \
-              --junit-xml="/tmp/test-results/results_${PROVIDER_NAME}_${short}.xml"
-            rc=$?
-            set -e
-            echo "::endgroup::"
-            if [ $rc -ne 0 ] && [ $rc -ne 5 ]; then
-              overall_rc=$rc
-            fi
-          done
-          exit $overall_rc
+          python -m pytest -s -v tests/integration/responses/ \
+            -k "not ($SKIP_TESTS)" \
+            --stack-config=server:"$GITHUB_WORKSPACE/distribution/config.yaml" \
+            --text-model="$MODEL" \
+            --embedding-model="$EMBEDDING_MODEL" \
+            --inference-mode=live \
+            --junit-xml="/tmp/test-results/results_${PROVIDER_NAME}_${SHORT}.xml" \
+            || [ $? -eq 5 ]
 
       - name: Publish test report
         if: always()
         uses: dorny/test-reporter@df6247429542221bc30d46a036ee47af1102c451 # v2
         with:
-          name: "${{ env.PROVIDER_NAME }}"
+          name: "${{ env.PROVIDER_NAME }}/${{ steps.model.outputs.short }}"
           path: /tmp/test-results/*.xml
           reporter: java-junit
           fail-on-error: 'false'
@@ -160,7 +156,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: responses-${{ env.PROVIDER_NAME }}
+          name: responses-${{ env.PROVIDER_NAME }}-${{ steps.model.outputs.short }}
           path: /tmp/test-results/
           retention-days: 90
 
